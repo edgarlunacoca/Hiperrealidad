@@ -1,0 +1,195 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>Simulación dentro de la Simulación – Robot</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <style>
+      html,body{margin:0;height:100%;background:#0b0e12;color:#cfd7df;font-family:Inter,system-ui,Arial}
+      #hud{position:fixed;top:8px;left:8px;background:#0b0e12cc;padding:8px 10px;border:1px solid #1e2630;border-radius:8px}
+      #err{position:fixed;bottom:8px;left:8px;font-size:12px;opacity:.8}
+    </style>
+    <script src="https://unpkg.com/phaser@3.80.0/dist/phaser.js"></script>
+  </head>
+  <body>
+    <div id="hud">
+      <b>Controles</b> ·
+      [←→↑↓ / WASD] Mover robot · [G] Glitch · [R] Nueva seed · [N] Nueva “piel” · [+/-] Velocidad
+      <div id="status"></div>
+    </div>
+    <div id="err"></div>
+    <script>
+    // --- Parámetros ---
+    const GRID_W = 32, GRID_H = 24, TILE = 24;
+    let SIM_SPEED = 1;
+    let seed = 12345;
+    let paletteIndex = 0;
+
+    // PRNG determinista (mulberry32)
+    function mulberry32(a){return function(){let t=a+=0x6D2B79F5;t=Math.imul(t^t>>>15,t|1);t^=t+Math.imul(t^t>>>7,t|61);return ((t^t>>>14)>>>0)/4294967296}}
+    function rngNext(){ return rng(); }
+    let rng = mulberry32(seed);
+
+    // Paletas
+    const PALETTES = [
+      { bg:"#0b0e12", grid:"#131922", a:"#6ae3ff", b:"#8aff80", c:"#ffd37a", robot:"#e6f1ff", robotEye:"#0b0e12" },
+      { bg:"#0f0a13", grid:"#191224", a:"#ff7ad9", b:"#8ad1ff", c:"#ffe480", robot:"#ffe8ff", robotEye:"#100b13" },
+      { bg:"#0b110f", grid:"#13211a", a:"#80ffb4", b:"#86f", c:"#ffd2a8", robot:"#e9ffef", robotEye:"#0a120e" },
+    ];
+
+    // Reglas
+    const RULES = {
+      agents: 30,
+      biasResource: 0.6,
+      biasLight: 0.3,
+      wander: 0.1,
+      glitchAmplifier: 2.0,
+      glitchTicks: 120
+    };
+
+    // Estado
+    const state = {
+      tick: 0,
+      glitchTicksLeft: 0,
+      cells: [],
+      agents: [],
+      robot: { x: Math.floor(GRID_W/2), y: Math.floor(GRID_H/2) }
+    };
+
+    function wrapX(x){ return (x+GRID_W)%GRID_W; }
+    function wrapY(y){ return (y+GRID_H)%GRID_H; }
+
+    function genWorld(withNewSeed=false){
+      if(withNewSeed){ seed = Math.floor(Math.random()*1e9); rng = mulberry32(seed); }
+      state.tick = 0;
+      state.glitchTicksLeft = 0;
+      state.cells = new Array(GRID_W*GRID_H).fill(0).map(_=>({ light: rngNext()<0.12 ? 1:0, res: rngNext()<0.10 ? 1:0 }));
+      state.agents = [];
+      for(let i=0;i<RULES.agents;i++){
+        state.agents.push({ x: Math.floor(rngNext()*GRID_W), y: Math.floor(rngNext()*GRID_H), dir:[0,1] });
+      }
+      state.robot = { x: Math.floor(GRID_W/2), y: Math.floor(GRID_H/2) };
+      updateStatus();
+    }
+
+    function step(){
+      let mult = state.glitchTicksLeft>0 ? RULES.glitchAmplifier : 1;
+      for(const a of state.agents){
+        let best = { score:-1, dx:0, dy:0 };
+        for(const [dx,dy] of [[1,0],[-1,0],[0,1],[0,-1]]){
+          let nx = wrapX(a.x+dx), ny = wrapY(a.y+dy);
+          let cell = state.cells[ny*GRID_W+nx];
+          let s = RULES.biasResource*cell.res + RULES.biasLight*cell.light + RULES.wander*(rngNext()*0.5);
+          if(state.glitchTicksLeft>0 && cell.light){ s *= mult; }
+          if(s>best.score){ best = { score:s, dx, dy }; }
+        }
+        a.x = wrapX(a.x + best.dx); a.y = wrapY(a.y + best.dy); a.dir=[best.dx,best.dy];
+        if(rngNext()<0.005*mult){
+          const idx = a.y*GRID_W+a.x;
+          state.cells[idx].light = +(rngNext()<0.5);
+          state.cells[idx].res   = +(rngNext()<0.5);
+        }
+      }
+      if(state.glitchTicksLeft>0) state.glitchTicksLeft--;
+      state.tick++;
+    }
+
+    function glitch(){ state.glitchTicksLeft = RULES.glitchTicks; updateStatus(); }
+    function nextPalette(){ paletteIndex = (paletteIndex+1)%PALETTES.length; document.body.style.background=PALETTES[paletteIndex].bg; }
+
+    class SimScene extends Phaser.Scene{
+      create(){
+        this.gfx = this.add.graphics();
+        this.time.addEvent({ loop:true, delay:16, callback:()=>{
+          for(let i=0;i<SIM_SPEED;i++) step();
+          this.render();
+        }});
+        // Input
+        this.input.keyboard.on('keydown', e=>{
+          if(e.key==='g' || e.key==='G') glitch();
+          if(e.key==='r' || e.key==='R') genWorld(true);
+          if(e.key==='n' || e.key==='N') nextPalette();
+          if(e.key==='+') { SIM_SPEED=Math.min(16,SIM_SPEED+1); updateStatus(); }
+          if(e.key==='-') { SIM_SPEED=Math.max(1,SIM_SPEED-1); updateStatus(); }
+          // mover robot por celdas
+          const key = e.key.toLowerCase();
+          if(['arrowleft','a'].includes(key))  state.robot.x = wrapX(state.robot.x-1);
+          if(['arrowright','d'].includes(key)) state.robot.x = wrapX(state.robot.x+1);
+          if(['arrowup','w'].includes(key))    state.robot.y = wrapY(state.robot.y-1);
+          if(['arrowdown','s'].includes(key))  state.robot.y = wrapY(state.robot.y+1);
+        });
+        document.body.style.background=PALETTES[paletteIndex].bg;
+      }
+      render(){
+        const pal = PALETTES[paletteIndex];
+        this.gfx.clear();
+
+        // grid
+        this.gfx.fillStyle(Phaser.Display.Color.HexStringToColor(pal.grid).color, 1);
+        for(let y=0;y<GRID_H;y++){
+          for(let x=0;x<GRID_W;x++){
+            this.gfx.fillRect(x*TILE, y*TILE, TILE-1, TILE-1);
+          }
+        }
+        // cells
+        for(let y=0;y<GRID_H;y++){
+          for(let x=0;x<GRID_W;x++){
+            const cell = state.cells[y*GRID_W+x];
+            if(cell.light){
+              this.gfx.fillStyle(Phaser.Display.Color.HexStringToColor(pal.a).color, 0.45);
+              this.gfx.fillRect(x*TILE+4, y*TILE+4, TILE-8, TILE-8);
+            }
+            if(cell.res){
+              this.gfx.fillStyle(Phaser.Display.Color.HexStringToColor(pal.b).color, 0.45);
+              this.gfx.fillCircle(x*TILE+TILE/2, y*TILE+TILE/2, (TILE-10)/2);
+            }
+          }
+        }
+        // agents (triángulos)
+        this.gfx.fillStyle(Phaser.Display.Color.HexStringToColor(pal.c).color, 1);
+        for(const a of state.agents){
+          const cx = a.x*TILE + TILE/2, cy = a.y*TILE + TILE/2;
+          this.gfx.fillTriangle(
+            cx + a.dir[0]*8, cy + a.dir[1]*8,
+            cx - a.dir[1]*6, cy + a.dir[0]*6,
+            cx + a.dir[1]*6, cy - a.dir[0]*6
+          );
+        }
+        // robot (sprite vectorial simple)
+        const rx = state.robot.x*TILE, ry = state.robot.y*TILE;
+        // cuerpo
+        this.gfx.fillStyle(Phaser.Display.Color.HexStringToColor(pal.robot).color, 1);
+        this.gfx.fillRoundedRect(rx+4, ry+4, TILE-8, TILE-8, 4);
+        // ojos
+        this.gfx.fillStyle(Phaser.Display.Color.HexStringToColor(pal.robotEye).color, 1);
+        this.gfx.fillCircle(rx+TILE*0.4, ry+TILE*0.45, 2.8);
+        this.gfx.fillCircle(rx+TILE*0.6, ry+TILE*0.45, 2.8);
+        // antena
+        this.gfx.fillRect(rx+TILE/2-1, ry+2, 2, 6);
+        this.gfx.fillCircle(rx+TILE/2, ry+2, 2.2);
+
+        updateStatus();
+      }
+    }
+
+    function updateStatus(){
+      const el = document.getElementById('status');
+      el.textContent = ` seed=${seed} | tick=${state.tick} | speed=${SIM_SPEED}x | glitch=${state.glitchTicksLeft>0?'ON':'off'} `;
+    }
+
+    const config = {
+      type: Phaser.AUTO,
+      width: GRID_W*TILE, height: GRID_H*TILE,
+      parent: document.body,
+      backgroundColor: '#000',
+      scene: [SimScene]
+    };
+    try{
+      const game = new Phaser.Game(config);
+      genWorld(false);
+    }catch(err){
+      document.getElementById('err').textContent = 'Error iniciando Phaser: ' + err.message;
+    }
+    </script>
+  </body>
+</html>
