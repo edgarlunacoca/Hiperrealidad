@@ -1,0 +1,171 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8" />
+  <title>Hiperrealidad — 3D GTA-style MVP</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <style>
+    html,body{margin:0;height:100%;background:#0b0e12;color:#cfd7df;font-family:Inter,system-ui,Arial;overflow:hidden}
+    #hud{position:fixed;top:8px;left:8px;background:#0b0e12cc;padding:10px 12px;border:1px solid #1e2630;border-radius:10px;z-index:10}
+    #hud small{opacity:.85}
+    #err{position:fixed;bottom:8px;left:8px;font-size:12px;opacity:.9;color:#ffb3b3;max-width:70vw}
+  </style>
+</head>
+<body>
+<div id="hud">
+  <b>Controles 3D</b> · WASD mover · Ratón rotar cámara · Shift correr · Espacio saltar · C cámara 1ª/3ª persona · N nueva ciudad
+  <div><small>Prototype 3D — personaje “maniquí con hoodie”, ciudad low‑poly procedural.</small></div>
+</div>
+<div id="err"></div>
+<script type="module">
+import * as THREE from 'https://unpkg.com/three@0.160.0/build/three.module.js';
+import { OrbitControls } from 'https://unpkg.com/three@0.160.0/examples/jsm/controls/OrbitControls.js';
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x0b0e12);
+const renderer = new THREE.WebGLRenderer({antialias:true});
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.shadowMap.enabled = true;
+document.body.appendChild(renderer.domElement);
+const camera = new THREE.PerspectiveCamera(70, window.innerWidth/window.innerHeight, 0.1, 2000);
+camera.position.set(0, 8, 12);
+const hemi = new THREE.HemisphereLight(0xbfd9ff, 0x223344, .8);
+scene.add(hemi);
+const sun = new THREE.DirectionalLight(0xffffff, 1.0);
+sun.position.set(50, 100, 20);
+sun.castShadow = true;
+sun.shadow.mapSize.set(2048,2048);
+scene.add(sun);
+const WORLD = 800, TILE = 40;
+const gnd = new THREE.Group(); scene.add(gnd);
+const roadMat = new THREE.MeshStandardMaterial({ color: 0x2a323e, roughness:.9, metalness:0.05 });
+const lineMat = new THREE.MeshStandardMaterial({ color: 0x9fb3ff, roughness:.7, metalness:0.1 });
+const b1Mat   = new THREE.MeshStandardMaterial({ color: 0x1d2734 });
+const b2Mat   = new THREE.MeshStandardMaterial({ color: 0x232e3d });
+const parkMat = new THREE.MeshStandardMaterial({ color: 0x153225 });
+const tileGeo = new THREE.BoxGeometry(TILE, 0.1, TILE);
+const lineGeo = new THREE.BoxGeometry(1, 0.12, TILE);
+const colliders = [];
+function newCity(){
+  while(gnd.children.length) gnd.remove(gnd.children[0]);
+  colliders.length = 0;
+  const cols = Math.floor(WORLD/TILE);
+  const rows = Math.floor(WORLD/TILE);
+  const roadsX = new Set();
+  const roadsZ = new Set();
+  let c=0; while(c<cols){ roadsX.add(c); c += 3 + Math.floor(Math.random()*3); }
+  let r=0; while(r<rows){ roadsZ.add(r); r += 3 + Math.floor(Math.random()*3); }
+  const half = WORLD/2;
+  for(let r=0;r<rows;r++){
+    for(let c=0;c<cols;c++){
+      const x = c*TILE - half + TILE/2;
+      const z = r*TILE - half + TILE/2;
+      const isRoad = roadsX.has(c) || roadsZ.has(r);
+      const mat = isRoad ? roadMat : ((r+c)%2? b1Mat : b2Mat);
+      const m = new THREE.Mesh(tileGeo, mat);
+      m.receiveShadow = true; m.position.set(x, 0, z); gnd.add(m);
+      if(!isRoad){
+        const h = 8 + Math.random()*28;
+        const geo = new THREE.BoxGeometry(TILE-6, h, TILE-6);
+        const matE = Math.random()<0.2 ? parkMat : ((r+c)%2? b2Mat : b1Mat);
+        const b = new THREE.Mesh(geo, matE);
+        b.castShadow = true; b.receiveShadow = true; b.position.set(x, h/2, z);
+        scene.add(b);
+        colliders.push(b);
+      }
+    }
+  }
+  for (let cc of roadsX){
+    const x = cc*TILE - half + TILE/2;
+    const line = new THREE.Mesh(lineGeo, lineMat);
+    line.position.set(x, 0.06, 0); gnd.add(line);
+  }
+  for (let rr of roadsZ){
+    const z = rr*TILE - half + TILE/2;
+    const line = new THREE.Mesh(new THREE.BoxGeometry(TILE, 0.12, 1), lineMat);
+    line.position.set(0, 0.06, z); gnd.add(line);
+  }
+}
+const player = new THREE.Group(); scene.add(player);
+function makePlayer(){
+  while(player.children.length) player.remove(player.children[0]);
+  const hoodieColor = 0x6f1d1b, pantsColor  = 0x1c1c22, skinColor   = 0xf0efe9;
+  const torsoGeo = new THREE.CapsuleGeometry(0.9, 1.2, 8, 16);
+  const torsoMat = new THREE.MeshStandardMaterial({ color: hoodieColor, roughness:0.8 });
+  const torso = new THREE.Mesh(torsoGeo, torsoMat); torso.castShadow = true; torso.position.y = 1.7; player.add(torso);
+  const canvas = document.createElement('canvas'); canvas.width = 256; canvas.height = 128;
+  const ctx = canvas.getContext('2d'); ctx.fillStyle = '#6f1d1b'; ctx.fillRect(0,0,canvas.width,canvas.height);
+  ctx.fillStyle = '#ffffff'; ctx.font = 'bold 72px serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillText('VRE', canvas.width/2, canvas.height/2);
+  const tex = new THREE.CanvasTexture(canvas);
+  const decal = new THREE.Mesh(new THREE.PlaneGeometry(1.4, 0.7), new THREE.MeshBasicMaterial({map:tex, transparent:true}));
+  decal.position.set(0, 1.75, 0.95); player.add(decal);
+  const head = new THREE.Mesh(new THREE.SphereGeometry(0.55, 24, 16), new THREE.MeshStandardMaterial({ color: skinColor, roughness:0.6 }));
+  head.castShadow = true; head.position.y = 2.9; player.add(head);
+  const legGeo = new THREE.CylinderGeometry(0.28, 0.28, 1.0, 12);
+  const legMat = new THREE.MeshStandardMaterial({ color: pantsColor, roughness:.9 });
+  const l1 = new THREE.Mesh(legGeo, legMat); l1.position.set(-0.35, 0.5, 0); l1.castShadow = true;
+  const l2 = l1.clone(); l2.position.x = +0.35; player.add(l1,l2);
+  const shoeGeo = new THREE.BoxGeometry(0.5, 0.2, 0.9);
+  const shoeMat = new THREE.MeshStandardMaterial({ color: 0xf5f5f7 });
+  const s1 = new THREE.Mesh(shoeGeo, shoeMat); s1.position.set(-0.35, 0.1, 0.3); s1.castShadow=true;
+  const s2 = s1.clone(); s2.position.x = +0.35; player.add(s1,s2);
+  player.position.set(0,0,0);
+}
+makePlayer();
+const state = { pos: new THREE.Vector3(0,0,0), vel: new THREE.Vector3(), dir: 0, onGround: true, camMode: 'third' };
+const keys = {};
+window.addEventListener('keydown', e=>{ keys[e.code] = true; if(e.code==='KeyC') state.camMode=(state.camMode==='third'?'first':'third'); if(e.code==='KeyN') newCity(); });
+window.addEventListener('keyup', e=> keys[e.code] = false);
+const camTarget = new THREE.Vector3();
+function updateCamera(dt){
+  const behind = new THREE.Vector3(Math.sin(state.dir), 0, Math.cos(state.dir)).multiplyScalar(-6);
+  const up = new THREE.Vector3(0, 3, 0);
+  if(state.camMode==='third'){
+    const desired = new THREE.Vector3().copy(state.pos).add(behind).add(up);
+    camera.position.lerp(desired, 1 - Math.pow(0.001, dt));
+    camTarget.copy(state.pos).add(new THREE.Vector3(0,1.6,0));
+    camera.lookAt(camTarget);
+  }else{
+    const eye = new THREE.Vector3().copy(state.pos).add(new THREE.Vector3(0,2.5,0));
+    camera.position.lerp(eye, 1 - Math.pow(0.001, dt));
+    const look = new THREE.Vector3(Math.sin(state.dir), 0, Math.cos(state.dir)).add(eye);
+    camera.lookAt(look);
+  }
+}
+function physics(dt){
+  const forward = (keys['KeyW']||keys['ArrowUp']) ? 1 : (keys['KeyS']||keys['ArrowDown']) ? -1 : 0;
+  const turn = (keys['KeyA']||keys['ArrowLeft']) ? 1 : (keys['KeyD']||keys['ArrowRight']) ? -1 : 0;
+  const sprint = keys['ShiftLeft']||keys['ShiftRight'];
+  const turnRate = 2.6 * (sprint?1.15:1.0); state.dir += turn * turnRate * dt;
+  const speed = (sprint? 10 : 6);
+  const vx = Math.sin(state.dir) * forward * speed;
+  const vz = Math.cos(state.dir) * forward * speed;
+  state.vel.set(vx, 0, vz);
+  const next = new THREE.Vector3().copy(state.pos).addScaledVector(state.vel, dt);
+  const radius = 0.6;
+  for(const b of colliders){
+    const bb = new THREE.Box3().setFromObject(b);
+    bb.min.x -= radius; bb.min.z -= radius; bb.max.x += radius; bb.max.z += radius;
+    if(bb.containsPoint(new THREE.Vector3(next.x, b.position.y, next.z))){
+      const dx = Math.min(Math.abs(bb.min.x-next.x), Math.abs(bb.max.x-next.x));
+      const dz = Math.min(Math.abs(bb.min.z-next.z), Math.abs(bb.max.z-next.z));
+      if(dx<dz){ next.x = (next.x < b.position.x) ? bb.min.x : bb.max.x; } else { next.z = (next.z < b.position.z) ? bb.min.z : bb.max.z; }
+    }
+  }
+  const half = WORLD/2 - 2;
+  next.x = THREE.MathUtils.clamp(next.x, -half, half);
+  next.z = THREE.MathUtils.clamp(next.z, -half, half);
+  state.pos.copy(next);
+  player.position.set(state.pos.x, 0, state.pos.z);
+  player.rotation.y = state.dir;
+}
+window.addEventListener('resize', ()=>{ camera.aspect=window.innerWidth/window.innerHeight; camera.updateProjectionMatrix(); renderer.setSize(window.innerWidth, window.innerHeight); });
+const orbit = new OrbitControls(camera, renderer.domElement); orbit.enabled=false; window.addEventListener('keydown',(e)=>{ if(e.code==='KeyO') orbit.enabled=!orbit.enabled; });
+newCity();
+state.pos.set(0,0,0);
+let last = performance.now();
+function loop(now){ const dt = Math.min(0.033, (now-last)/1000); last = now; physics(dt); updateCamera(dt); renderer.render(scene, camera); requestAnimationFrame(loop); }
+requestAnimationFrame(loop);
+window.addEventListener('error', (e)=>{ document.getElementById('err').textContent = 'Error: ' + e.message; });
+</script>
+</body>
+</html>
